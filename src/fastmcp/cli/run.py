@@ -71,6 +71,9 @@ def import_server(file: Path, server_object: str | None = None) -> Any:
         logger.error("Could not load module", extra={"file": str(file)})
         sys.exit(1)
 
+    assert spec is not None
+    assert spec.loader is not None
+
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
@@ -137,6 +140,30 @@ def create_client_server(url: str) -> Any:
         sys.exit(1)
 
 
+def import_server_with_args(
+    file: Path, server_object: str | None = None, server_args: list[str] | None = None
+) -> Any:
+    """Import a server with optional command line arguments.
+
+    Args:
+        file: Path to the server file
+        server_object: Optional server object name
+        server_args: Optional command line arguments to inject
+
+    Returns:
+        The imported server object
+    """
+    if server_args:
+        original_argv = sys.argv[:]
+        try:
+            sys.argv = [str(file)] + server_args
+            return import_server(file, server_object)
+        finally:
+            sys.argv = original_argv
+    else:
+        return import_server(file, server_object)
+
+
 def run_command(
     server_spec: str,
     transport: str | None = None,
@@ -164,17 +191,7 @@ def run_command(
         file, server_object = parse_file_path(server_spec)
 
         # Inject server arguments into sys.argv before importing
-        if server_args:
-            original_argv = sys.argv[:]
-            try:
-                # Set up sys.argv as if the server was called directly with its args
-                sys.argv = [str(file)] + server_args
-                server = import_server(file, server_object)
-            finally:
-                # Restore original sys.argv
-                sys.argv = original_argv
-        else:
-            server = import_server(file, server_object)
+        server = import_server_with_args(file, server_object, server_args)
 
         logger.debug(f'Found server "{server.name}" in {file}')
 

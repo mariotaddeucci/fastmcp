@@ -173,16 +173,7 @@ def dev(
 
     try:
         # Import server to get dependencies
-        if server_args:
-            # Inject server arguments before importing
-            original_argv = sys.argv[:]
-            try:
-                sys.argv = [str(file)] + server_args
-                server = run_module.import_server(file, server_object)
-            finally:
-                sys.argv = original_argv
-        else:
-            server = run_module.import_server(file, server_object)
+        server = run_module.import_server_with_args(file, server_object, server_args)
 
         if hasattr(server, "dependencies") and server.dependencies is not None:
             with_packages = list(set(with_packages + server.dependencies))
@@ -425,15 +416,9 @@ def install(
     if not name:
         try:
             # Use server args when importing for proper configuration
-            if server_args:
-                original_argv = sys.argv[:]
-                try:
-                    sys.argv = [str(file)] + server_args
-                    server = run_module.import_server(file, server_object)
-                finally:
-                    sys.argv = original_argv
-            else:
-                server = run_module.import_server(file, server_object)
+            server = run_module.import_server_with_args(
+                file, server_object, server_args
+            )
             name = server.name
         except (ImportError, ModuleNotFoundError) as e:
             logger.debug(
