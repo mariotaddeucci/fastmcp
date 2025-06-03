@@ -89,6 +89,8 @@ def import_server(file: Path, server_object: str | None = None) -> Any:
         )
         sys.exit(1)
 
+    assert server_object is not None
+
     # Handle module:object syntax
     if ":" in server_object:
         module_name, object_name = server_object.split(":", 1)
@@ -141,6 +143,7 @@ def run_command(
     host: str | None = None,
     port: int | None = None,
     log_level: str | None = None,
+    server_args: list[str] | None = None,
 ) -> None:
     """Run a MCP server or connect to a remote one.
 
@@ -150,6 +153,7 @@ def run_command(
         host: Host to bind to when using http transport
         port: Port to bind to when using http transport
         log_level: Log level
+        server_args: Additional arguments to pass to the server
     """
     if is_url(server_spec):
         # Handle URL case
@@ -158,7 +162,20 @@ def run_command(
     else:
         # Handle file case
         file, server_object = parse_file_path(server_spec)
-        server = import_server(file, server_object)
+
+        # Inject server arguments into sys.argv before importing
+        if server_args:
+            original_argv = sys.argv[:]
+            try:
+                # Set up sys.argv as if the server was called directly with its args
+                sys.argv = [str(file)] + server_args
+                server = import_server(file, server_object)
+            finally:
+                # Restore original sys.argv
+                sys.argv = original_argv
+        else:
+            server = import_server(file, server_object)
+
         logger.debug(f'Found server "{server.name}" in {file}')
 
     # Run the server

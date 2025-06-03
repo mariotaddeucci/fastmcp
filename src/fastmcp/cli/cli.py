@@ -147,6 +147,13 @@ def dev(
             help="Port for the MCP Inspector Proxy server",
         ),
     ] = None,
+    server_args: Annotated[
+        list[str],
+        typer.Option(
+            "--server-arg",
+            help="Additional arguments to pass to the server",
+        ),
+    ] = [],
 ) -> None:
     """Run a MCP server with the MCP Inspector."""
     file, server_object = run_module.parse_file_path(server_spec)
@@ -160,12 +167,23 @@ def dev(
             "with_packages": with_packages,
             "ui_port": ui_port,
             "server_port": server_port,
+            "server_args": server_args,
         },
     )
 
     try:
         # Import server to get dependencies
-        server = run_module.import_server(file, server_object)
+        if server_args:
+            # Inject server arguments before importing
+            original_argv = sys.argv[:]
+            try:
+                sys.argv = [str(file)] + server_args
+                server = run_module.import_server(file, server_object)
+            finally:
+                sys.argv = original_argv
+        else:
+            server = run_module.import_server(file, server_object)
+
         if hasattr(server, "dependencies") and server.dependencies is not None:
             with_packages = list(set(with_packages + server.dependencies))
 
@@ -189,6 +207,10 @@ def dev(
             inspector_cmd += f"@{inspector_version}"
 
         uv_cmd = _build_uv_command(server_spec, with_editable, with_packages)
+
+        # Add server args to the uv command
+        if server_args:
+            uv_cmd.extend(["--"] + server_args)
 
         # Run the MCP Inspector command with shell=True on Windows
         shell = sys.platform == "win32"
@@ -256,6 +278,13 @@ def run(
             help="Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
         ),
     ] = None,
+    server_args: Annotated[
+        list[str],
+        typer.Option(
+            "--server-arg",
+            help="Additional arguments to pass to the server",
+        ),
+    ] = [],
 ) -> None:
     """Run a MCP server or connect to a remote one.
 
@@ -266,6 +295,9 @@ def run(
 
     Note: This command runs the server directly. You are responsible for ensuring
     all dependencies are available.
+
+    Server arguments can be passed using --server-arg:
+    fastmcp run server.py --server-arg="--config" --server-arg="config.json"
     """
     logger.debug(
         "Running server or client",
@@ -275,6 +307,7 @@ def run(
             "host": host,
             "port": port,
             "log_level": log_level,
+            "server_args": server_args,
         },
     )
 
@@ -285,6 +318,7 @@ def run(
             host=host,
             port=port,
             log_level=log_level,
+            server_args=server_args,
         )
     except Exception as e:
         logger.error(
@@ -350,11 +384,21 @@ def install(
             resolve_path=True,
         ),
     ] = None,
+    server_args: Annotated[
+        list[str],
+        typer.Option(
+            "--server-arg",
+            help="Additional arguments to pass to the server for configuration discovery",
+        ),
+    ] = [],
 ) -> None:
     """Install a MCP server in the Claude desktop app.
 
     Environment variables are preserved once added and only updated if new values
     are explicitly provided.
+
+    Server arguments can be used to pass configuration needed for the server to load properly:
+    fastmcp install server.py --server-arg="--config" --server-arg="config.json"
     """
     file, server_object = run_module.parse_file_path(server_spec)
 
@@ -366,6 +410,7 @@ def install(
             "server_object": server_object,
             "with_editable": str(with_editable) if with_editable else None,
             "with_packages": with_packages,
+            "server_args": server_args,
         },
     )
 
@@ -379,7 +424,16 @@ def install(
     server = None
     if not name:
         try:
-            server = run_module.import_server(file, server_object)
+            # Use server args when importing for proper configuration
+            if server_args:
+                original_argv = sys.argv[:]
+                try:
+                    sys.argv = [str(file)] + server_args
+                    server = run_module.import_server(file, server_object)
+                finally:
+                    sys.argv = original_argv
+            else:
+                server = run_module.import_server(file, server_object)
             name = server.name
         except (ImportError, ModuleNotFoundError) as e:
             logger.debug(

@@ -61,6 +61,59 @@ fastmcp dev server.py
 
 See the [CLI documentation](/patterns/cli) for detailed information about all available commands and options.
 
+### Passing Arguments to Servers
+
+<VersionBadge version="2.6.2" />
+
+FastMCP CLI supports passing command line arguments to servers using the `--server-arg` option, enabling configuration like file paths, database connections, and debug flags:
+
+```bash
+fastmcp run server.py --server-arg="--config" --server-arg="config.json"
+```
+
+This works with all CLI commands:
+
+```bash
+# Run with arguments
+fastmcp run server.py --server-arg="--database-path" --server-arg="/tmp/db.sqlite"
+
+# Development with arguments  
+fastmcp dev server.py --server-arg="--debug" --server-arg="--config" --server-arg="dev.json"
+
+# Install with arguments for proper server discovery
+fastmcp install server.py --server-arg="--config" --server-arg="prod.json"
+```
+
+To accept arguments in your server, use standard Python argument parsing at the module level:
+
+```python
+import argparse
+from fastmcp import FastMCP
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--config", help="Configuration file path")
+parser.add_argument("--database-path", help="Database file path")
+parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+
+args = parser.parse_args()
+
+# Configure server based on arguments
+mcp = FastMCP(f"MyServer{' (Debug)' if args.debug else ''}")
+
+@mcp.tool()
+def get_config():
+    return {
+        "config_file": args.config,
+        "database_path": args.database_path,
+        "debug": args.debug
+    }
+
+if __name__ == "__main__":
+    mcp.run()
+```
+
+The CLI temporarily modifies `sys.argv` before importing your server module, allowing argument parsing to work exactly like running `python server.py --args` directly.
+
 ## Transport Options
 
 Below is a comparison of available transport options to help you choose the right one for your needs:
