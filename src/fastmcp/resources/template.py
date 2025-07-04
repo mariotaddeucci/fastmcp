@@ -15,7 +15,7 @@ from pydantic import (
     validate_call,
 )
 
-from fastmcp.resources.types import Resource
+from fastmcp.resources.resource import Resource
 from fastmcp.server.dependencies import get_context
 from fastmcp.utilities.components import FastMCPComponent
 from fastmcp.utilities.json_schema import compress_schema
@@ -62,11 +62,31 @@ class ResourceTemplate(FastMCPComponent):
         description="JSON schema for function parameters"
     )
 
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(uri_template={self.uri_template!r}, name={self.name!r}, description={self.description!r}, tags={self.tags})"
+
+    def enable(self) -> None:
+        super().enable()
+        try:
+            context = get_context()
+            context._queue_resource_list_changed()  # type: ignore[private-use]
+        except RuntimeError:
+            pass  # No context available
+
+    def disable(self) -> None:
+        super().disable()
+        try:
+            context = get_context()
+            context._queue_resource_list_changed()  # type: ignore[private-use]
+        except RuntimeError:
+            pass  # No context available
+
     @staticmethod
     def from_function(
         fn: Callable[..., Any],
         uri_template: str,
         name: str | None = None,
+        title: str | None = None,
         description: str | None = None,
         mime_type: str | None = None,
         tags: set[str] | None = None,
@@ -76,6 +96,7 @@ class ResourceTemplate(FastMCPComponent):
             fn=fn,
             uri_template=uri_template,
             name=name,
+            title=title,
             description=description,
             mime_type=mime_type,
             tags=tags,
@@ -125,8 +146,32 @@ class ResourceTemplate(FastMCPComponent):
             "name": self.name,
             "description": self.description,
             "mimeType": self.mime_type,
+            "title": self.title,
         }
         return MCPResourceTemplate(**kwargs | overrides)
+
+    @classmethod
+    def from_mcp_template(cls, mcp_template: MCPResourceTemplate) -> ResourceTemplate:
+        """Creates a FastMCP ResourceTemplate from a raw MCP ResourceTemplate object."""
+        # Note: This creates a simple ResourceTemplate instance. For function-based templates,
+        # the original function is lost, which is expected for remote templates.
+        return cls(
+            uri_template=mcp_template.uriTemplate,
+            name=mcp_template.name,
+            description=mcp_template.description,
+            mime_type=mcp_template.mimeType or "text/plain",
+            parameters={},  # Remote templates don't have local parameters
+        )
+
+    @property
+    def key(self) -> str:
+        """
+        The key of the component. This is used for internal bookkeeping
+        and may reflect e.g. prefixes or other identifiers. You should not depend on
+        keys having a certain value, as the same tool loaded from different
+        hierarchies of servers may have different keys.
+        """
+        return self._key or self.uri_template
 
 
 class FunctionResourceTemplate(ResourceTemplate):
@@ -155,6 +200,7 @@ class FunctionResourceTemplate(ResourceTemplate):
         fn: Callable[..., Any],
         uri_template: str,
         name: str | None = None,
+        title: str | None = None,
         description: str | None = None,
         mime_type: str | None = None,
         tags: set[str] | None = None,
@@ -236,6 +282,7 @@ class FunctionResourceTemplate(ResourceTemplate):
         return cls(
             uri_template=uri_template,
             name=func_name,
+            title=title,
             description=description,
             mime_type=mime_type or "text/plain",
             fn=fn,

@@ -21,15 +21,15 @@ from fastmcp.exceptions import ToolError
 from fastmcp.resources import Resource, ResourceTemplate
 from fastmcp.server.dependencies import get_http_headers
 from fastmcp.server.server import FastMCP
-from fastmcp.tools.tool import Tool, _convert_to_content
+from fastmcp.tools.tool import Tool, ToolResult
 from fastmcp.utilities import openapi
 from fastmcp.utilities.logging import get_logger
 from fastmcp.utilities.openapi import (
     HTTPRoute,
     _combine_schemas,
+    format_array_parameter,
     format_description_with_responses,
 )
-from fastmcp.utilities.types import MCPContent
 
 if TYPE_CHECKING:
     from fastmcp.server import Context
@@ -255,7 +255,7 @@ class OpenAPITool(Tool):
         """Custom representation to prevent recursion errors when printing."""
         return f"OpenAPITool(name={self.name!r}, method={self._route.method}, path={self._route.path})"
 
-    async def run(self, arguments: dict[str, Any]) -> list[MCPContent]:
+    async def run(self, arguments: dict[str, Any]) -> ToolResult:
         """Execute the HTTP request based on the route configuration."""
 
         # Prepare URL
@@ -297,46 +297,10 @@ class OpenAPITool(Tool):
                 if is_array:
                     # Format array values as comma-separated string
                     # This follows the OpenAPI 'simple' style (default for path)
-                    if all(
-                        isinstance(item, str | int | float | bool)
-                        for item in param_value
-                    ):
-                        # Handle simple array types
-                        path = path.replace(
-                            f"{{{param_name}}}", ",".join(str(v) for v in param_value)
-                        )
-                    else:
-                        # Handle complex array types (containing objects/dicts)
-                        try:
-                            # Try to create a simple representation without Python syntax artifacts
-                            formatted_parts = []
-                            for item in param_value:
-                                if isinstance(item, dict):
-                                    # For objects, serialize key-value pairs
-                                    item_parts = []
-                                    for k, v in item.items():
-                                        item_parts.append(f"{k}:{v}")
-                                    formatted_parts.append(".".join(item_parts))
-                                else:
-                                    # Fallback for other complex types
-                                    formatted_parts.append(str(item))
-
-                            # Join parts with commas
-                            formatted_value = ",".join(formatted_parts)
-                            path = path.replace(f"{{{param_name}}}", formatted_value)
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to format complex array path parameter '{param_name}': {e}"
-                            )
-                            # Fallback to string representation, but remove Python syntax artifacts
-                            str_value = (
-                                str(param_value)
-                                .replace("[", "")
-                                .replace("]", "")
-                                .replace("'", "")
-                                .replace('"', "")
-                            )
-                            path = path.replace(f"{{{param_name}}}", str_value)
+                    formatted_value = format_array_parameter(
+                        param_value, param_name, is_query_parameter=False
+                    )
+                    path = path.replace(f"{{{param_name}}}", str(formatted_value))
                     continue
 
             # Default handling for non-array parameters or non-array schemas
@@ -356,44 +320,21 @@ class OpenAPITool(Tool):
                 # Format array query parameters as comma-separated strings
                 # following OpenAPI form style (default for query parameters)
                 if isinstance(param_value, list) and p.schema_.get("type") == "array":
-                    # Get explode parameter from schema, default is True for query parameters
+                    # Get explode parameter from the parameter info, default is True for query parameters
                     # If explode is True, the array is serialized as separate parameters
                     # If explode is False, the array is serialized as a comma-separated string
-                    explode = p.schema_.get("explode", True)
+                    explode = p.explode if p.explode is not None else True
 
                     if explode:
                         # When explode=True, we pass the array directly, which HTTPX will serialize
                         # as multiple parameters with the same name
                         query_params[p.name] = param_value
                     else:
-                        # For arrays of simple types (strings, numbers, etc.), join with commas
-                        if all(
-                            isinstance(item, str | int | float | bool)
-                            for item in param_value
-                        ):
-                            query_params[p.name] = ",".join(str(v) for v in param_value)
-                        else:
-                            # For complex types, try to create a simpler representation
-                            try:
-                                # Try to create a simple string representation
-                                formatted_parts = []
-                                for item in param_value:
-                                    if isinstance(item, dict):
-                                        # For objects, serialize key-value pairs
-                                        item_parts = []
-                                        for k, v in item.items():
-                                            item_parts.append(f"{k}:{v}")
-                                        formatted_parts.append(".".join(item_parts))
-                                    else:
-                                        formatted_parts.append(str(item))
-
-                                query_params[p.name] = ",".join(formatted_parts)
-                            except Exception as e:
-                                logger.warning(
-                                    f"Failed to format complex array query parameter '{p.name}': {e}"
-                                )
-                                # Fallback to string representation
-                                query_params[p.name] = param_value
+                        # Format array as comma-separated string when explode=False
+                        formatted_value = format_array_parameter(
+                            param_value, p.name, is_query_parameter=True
+                        )
+                        query_params[p.name] = formatted_value
                 else:
                     # Non-array parameters are passed as is
                     query_params[p.name] = param_value
@@ -451,10 +392,11 @@ class OpenAPITool(Tool):
             # Try to parse as JSON first
             try:
                 result = response.json()
-            except (json.JSONDecodeError, ValueError):
-                # Return text content if not JSON
-                result = response.text
-            return _convert_to_content(result)
+                if not isinstance(result, dict):
+                    result = {"result": result}
+                return ToolResult(structured_content=result)
+            except json.JSONDecodeError:
+                return ToolResult(content=response.text)
 
         except httpx.HTTPStatusError as e:
             # Handle HTTP errors (4xx, 5xx)

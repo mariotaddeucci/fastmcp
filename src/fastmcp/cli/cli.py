@@ -1,5 +1,6 @@
 """FastMCP CLI tools."""
 
+import asyncio
 import importlib.metadata
 import importlib.util
 import os
@@ -11,6 +12,7 @@ from typing import Annotated
 
 import dotenv
 import typer
+from pydantic import TypeAdapter
 from rich.console import Console
 from rich.table import Table
 from typer import Context, Exit
@@ -19,6 +21,7 @@ import fastmcp
 from fastmcp.cli import claude
 from fastmcp.cli import run as run_module
 from fastmcp.server.server import FastMCP
+from fastmcp.utilities.inspect import FastMCPInfo, inspect_fastmcp
 from fastmcp.utilities.logging import get_logger
 
 logger = get_logger("cli")
@@ -61,6 +64,7 @@ def _build_uv_command(
     server_spec: str,
     with_editable: Path | None = None,
     with_packages: list[str] | None = None,
+    no_banner: bool = False,
 ) -> list[str]:
     """Build the uv run command that runs a MCP server through mcp run."""
     cmd = ["uv"]
@@ -77,6 +81,10 @@ def _build_uv_command(
 
     # Add mcp run command
     cmd.extend(["fastmcp", "run", server_spec])
+
+    if no_banner:
+        cmd.append("--no-banner")
+
     return cmd
 
 
@@ -189,7 +197,9 @@ def dev(
         if inspector_version:
             inspector_cmd += f"@{inspector_version}"
 
-        uv_cmd = _build_uv_command(server_spec, with_editable, with_packages)
+        uv_cmd = _build_uv_command(
+            server_spec, with_editable, with_packages, no_banner=True
+        )
 
         # Run the MCP Inspector command with shell=True on Windows
         shell = sys.platform == "win32"
@@ -232,7 +242,7 @@ def run(
         typer.Option(
             "--transport",
             "-t",
-            help="Transport protocol to use (stdio, streamable-http, or sse)",
+            help="Transport protocol to use (stdio, http, or sse)",
         ),
     ] = None,
     host: Annotated[
@@ -258,6 +268,13 @@ def run(
             help="Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
         ),
     ] = None,
+    no_banner: Annotated[
+        bool,
+        typer.Option(
+            "--no-banner",
+            help="Don't show the server banner",
+        ),
+    ] = False,
 ) -> None:
     """Run a MCP server or connect to a remote one.
 
@@ -294,6 +311,7 @@ def run(
             port=port,
             log_level=log_level,
             server_args=server_args,
+            show_banner=not no_banner,
         )
     except Exception as e:
         logger.error(
@@ -434,4 +452,99 @@ def install(
         logger.info(f"Successfully installed {name} in Claude app")
     else:
         logger.error(f"Failed to install {name} in Claude app")
+        sys.exit(1)
+
+
+@app.command()
+def inspect(
+    server_spec: str = typer.Argument(
+        ...,
+        help="Python file to inspect, optionally with :object suffix",
+    ),
+    output: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output file path for the JSON report (default: server-info.json)",
+        ),
+    ] = Path("server-info.json"),
+) -> None:
+    """Inspect a FastMCP server and generate a JSON report.
+
+    This command analyzes a FastMCP server (v1.x or v2.x) and generates
+    a comprehensive JSON report containing information about the server's
+    name, instructions, version, tools, prompts, resources, templates,
+    and capabilities.
+
+    Examples:
+        fastmcp inspect server.py
+        fastmcp inspect server.py -o report.json
+        fastmcp inspect server.py:mcp -o analysis.json
+        fastmcp inspect path/to/server.py:app -o /tmp/server-info.json
+    """
+
+    # Parse the server specification
+    file, server_object = run_module.parse_file_path(server_spec)
+
+    logger.debug(
+        "Inspecting server",
+        extra={
+            "file": str(file),
+            "server_object": server_object,
+            "output": str(output),
+        },
+    )
+
+    try:
+        # Import the server
+        server = run_module.import_server(file, server_object)
+
+        # Get server information
+        async def get_info():
+            return await inspect_fastmcp(server)
+
+        try:
+            # Try to use existing event loop if available
+            asyncio.get_running_loop()
+            # If there's already a loop running, we need to run in a thread
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, get_info())
+                info = future.result()
+        except RuntimeError:
+            # No running loop, safe to use asyncio.run
+            info = asyncio.run(get_info())
+
+        info_json = TypeAdapter(FastMCPInfo).dump_json(info, indent=2)
+
+        # Ensure output directory exists
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write JSON report (always pretty-printed)
+        with output.open("w", encoding="utf-8") as f:
+            f.write(info_json.decode("utf-8"))
+
+        logger.info(f"Server inspection complete. Report saved to {output}")
+
+        # Print summary to console
+        console.print(
+            f"[bold green]✓[/bold green] Inspected server: [bold]{info.name}[/bold]"
+        )
+        console.print(f"  Tools: {len(info.tools)}")
+        console.print(f"  Prompts: {len(info.prompts)}")
+        console.print(f"  Resources: {len(info.resources)}")
+        console.print(f"  Templates: {len(info.templates)}")
+        console.print(f"  Report saved to: [cyan]{output}[/cyan]")
+
+    except Exception as e:
+        logger.error(
+            f"Failed to inspect server: {e}",
+            extra={
+                "server_spec": server_spec,
+                "error": str(e),
+            },
+        )
+        console.print(f"[bold red]✗[/bold red] Failed to inspect server: {e}")
         sys.exit(1)

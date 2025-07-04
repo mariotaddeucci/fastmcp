@@ -2,12 +2,11 @@ import asyncio
 import json
 import sys
 from collections.abc import AsyncGenerator
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 import uvicorn
 from mcp import McpError
-from mcp.types import TextContent
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
@@ -29,6 +28,15 @@ def fastmcp_server():
         """Greet someone by name."""
         return f"Hello, {name}!"
 
+    @server.tool
+    async def elicit(ctx: Context) -> str:
+        """Elicit a response from the user."""
+        result = await ctx.elicit("What is your name?", response_type=str)
+        if result.action == "accept":
+            return f"You said your name was: {result.data}!"
+        else:
+            return "No name provided"
+
     # Add a second tool
     @server.tool
     def add(a: int, b: int) -> int:
@@ -45,6 +53,7 @@ def fastmcp_server():
     async def greet_with_progress(name: str, ctx: Context) -> str:
         """Report progress for a greeting."""
         await ctx.report_progress(0.5, 1.0, "Greeting in progress")
+        await ctx.report_progress(0.75, 1.0, "Almost there!")
         return f"Hello, {name}!"
 
     # Add a resource
@@ -79,7 +88,7 @@ def run_server(host: str, port: int, stateless_http: bool = False, **kwargs) -> 
 
 
 def run_nested_server(host: str, port: int) -> None:
-    mcp_app = fastmcp_server().http_app(path="/final/mcp")
+    mcp_app = fastmcp_server().http_app(path="/final/mcp/")
 
     mount = Starlette(routes=[Mount("/nest-inner", app=mcp_app)])
     mount2 = Starlette(
@@ -100,20 +109,45 @@ def run_nested_server(host: str, port: int) -> None:
 
 @pytest.fixture()
 async def streamable_http_server(
-    stateless_http: bool = False,
+    request,
 ) -> AsyncGenerator[str, None]:
+    stateless_http = getattr(request, "param", False)
     with run_server_in_process(
-        run_server, stateless_http=stateless_http, transport="streamable-http"
+        run_server, stateless_http=stateless_http, transport="http"
     ) as url:
-        async with Client(transport=StreamableHttpTransport(f"{url}/mcp")) as client:
+        async with Client(transport=StreamableHttpTransport(f"{url}/mcp/")) as client:
             assert await client.ping()
-        yield f"{url}/mcp"
+        yield f"{url}/mcp/"
+
+
+@pytest.fixture()
+async def streamable_http_server_with_streamable_http_alias() -> AsyncGenerator[
+    str, None
+]:
+    """Test that the "streamable-http" transport alias works."""
+    with run_server_in_process(run_server, transport="streamable-http") as url:
+        async with Client(transport=StreamableHttpTransport(f"{url}/mcp/")) as client:
+            assert await client.ping()
+        yield f"{url}/mcp/"
 
 
 async def test_ping(streamable_http_server: str):
     """Test pinging the server."""
     async with Client(
         transport=StreamableHttpTransport(streamable_http_server)
+    ) as client:
+        result = await client.ping()
+        assert result is True
+
+
+async def test_ping_with_streamable_http_alias(
+    streamable_http_server_with_streamable_http_alias: str,
+):
+    """Test pinging the server."""
+    async with Client(
+        transport=StreamableHttpTransport(
+            streamable_http_server_with_streamable_http_alias
+        )
     ) as client:
         result = await client.ping()
         assert result is True
@@ -142,12 +176,33 @@ async def test_greet_with_progress_tool(streamable_http_server: str):
         progress_handler=progress_handler,
     ) as client:
         result = await client.call_tool("greet_with_progress", {"name": "Alice"})
+        assert result.data == "Hello, Alice!"
 
-        assert isinstance(result, list)
-        assert isinstance(result[0], TextContent)
-        assert result[0].text == "Hello, Alice!"
+        progress_handler.assert_has_calls(
+            [
+                call(0.5, 1.0, "Greeting in progress"),
+                call(0.75, 1.0, "Almost there!"),
+            ]
+        )
 
-        progress_handler.assert_called_once_with(0.5, 1.0, "Greeting in progress")
+
+@pytest.mark.parametrize("streamable_http_server", [True, False], indirect=True)
+async def test_elicitation_tool(streamable_http_server: str, request):
+    """Test calling the elicitation tool in both stateless and stateful modes."""
+
+    async def elicitation_handler(message, response_type, params, ctx):
+        return {"value": "Alice"}
+
+    stateless_http = request.node.callspec.params.get("streamable_http_server", False)
+    if stateless_http:
+        pytest.xfail("Elicitation is not supported in stateless HTTP mode")
+
+    async with Client(
+        transport=StreamableHttpTransport(streamable_http_server),
+        elicitation_handler=elicitation_handler,
+    ) as client:
+        result = await client.call_tool("elicit")
+        assert result.data == "You said your name was: Alice!"
 
 
 async def test_nested_streamable_http_server_resolves_correctly():
@@ -156,7 +211,7 @@ async def test_nested_streamable_http_server_resolves_correctly():
 
     with run_server_in_process(run_nested_server) as url:
         async with Client(
-            transport=StreamableHttpTransport(f"{url}/nest-outer/nest-inner/final/mcp")
+            transport=StreamableHttpTransport(f"{url}/nest-outer/nest-inner/final/mcp/")
         ) as client:
             result = await client.ping()
             assert result is True

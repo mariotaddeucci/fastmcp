@@ -1,23 +1,28 @@
+from __future__ import annotations
+
 import asyncio
 import datetime
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generic, Literal, cast, overload
 
 import anyio
 import httpx
 import mcp.types
+import pydantic_core
 from exceptiongroup import catch
 from mcp import ClientSession
 from pydantic import AnyUrl
 
 import fastmcp
+from fastmcp.client.elicitation import ElicitationHandler, create_elicitation_callback
 from fastmcp.client.logging import (
     LogHandler,
-    MessageHandler,
     create_log_callback,
     default_log_handler,
 )
+from fastmcp.client.messages import MessageHandler, MessageHandlerT
 from fastmcp.client.progress import ProgressHandler, default_progress_handler
 from fastmcp.client.roots import (
     RootsHandler,
@@ -28,8 +33,10 @@ from fastmcp.client.sampling import SamplingHandler, create_sampling_callback
 from fastmcp.exceptions import ToolError
 from fastmcp.server import FastMCP
 from fastmcp.utilities.exceptions import get_catch_handlers
+from fastmcp.utilities.json_schema_type import json_schema_to_type
+from fastmcp.utilities.logging import get_logger
 from fastmcp.utilities.mcp_config import MCPConfig
-from fastmcp.utilities.types import MCPContent
+from fastmcp.utilities.types import get_cached_typeadapter
 
 from .transports import (
     ClientTransportT,
@@ -52,8 +59,11 @@ __all__ = [
     "LogHandler",
     "MessageHandler",
     "SamplingHandler",
+    "ElicitationHandler",
     "ProgressHandler",
 ]
+
+logger = get_logger(__name__)
 
 
 class Client(Generic[ClientTransportT]):
@@ -98,34 +108,39 @@ class Client(Generic[ClientTransportT]):
         cls,
         transport: ClientTransportT,
         **kwargs: Any,
-    ) -> "Client[ClientTransportT]": ...
+    ) -> Client[ClientTransportT]: ...
 
     @overload
     def __new__(
         cls, transport: AnyUrl, **kwargs
-    ) -> "Client[SSETransport|StreamableHttpTransport]": ...
+    ) -> Client[SSETransport | StreamableHttpTransport]: ...
 
     @overload
     def __new__(
         cls, transport: FastMCP | FastMCP1Server, **kwargs
-    ) -> "Client[FastMCPTransport]": ...
+    ) -> Client[FastMCPTransport]: ...
 
     @overload
     def __new__(
         cls, transport: Path, **kwargs
-    ) -> "Client[PythonStdioTransport|NodeStdioTransport]": ...
+    ) -> Client[PythonStdioTransport | NodeStdioTransport]: ...
 
     @overload
     def __new__(
         cls, transport: MCPConfig | dict[str, Any], **kwargs
-    ) -> "Client[MCPConfigTransport]": ...
+    ) -> Client[MCPConfigTransport]: ...
 
     @overload
     def __new__(
         cls, transport: str, **kwargs
-    ) -> "Client[PythonStdioTransport|NodeStdioTransport|SSETransport|StreamableHttpTransport]": ...
+    ) -> Client[
+        PythonStdioTransport
+        | NodeStdioTransport
+        | SSETransport
+        | StreamableHttpTransport
+    ]: ...
 
-    def __new__(cls, transport, **kwargs) -> "Client":
+    def __new__(cls, transport, **kwargs) -> Client:
         instance = super().__new__(cls)
         return instance
 
@@ -141,8 +156,9 @@ class Client(Generic[ClientTransportT]):
         # Common args
         roots: RootsList | RootsHandler | None = None,
         sampling_handler: SamplingHandler | None = None,
+        elicitation_handler: ElicitationHandler | None = None,
         log_handler: LogHandler | None = None,
-        message_handler: MessageHandler | None = None,
+        message_handler: MessageHandlerT | MessageHandler | None = None,
         progress_handler: ProgressHandler | None = None,
         timeout: datetime.timedelta | float | int | None = None,
         init_timeout: datetime.timedelta | float | int | None = None,
@@ -193,6 +209,11 @@ class Client(Generic[ClientTransportT]):
                 sampling_handler
             )
 
+        if elicitation_handler is not None:
+            self._session_kwargs["elicitation_callback"] = create_elicitation_callback(
+                elicitation_handler
+            )
+
         # session context management
         self._session: ClientSession | None = None
         self._exit_stack: AsyncExitStack | None = None
@@ -231,6 +252,14 @@ class Client(Generic[ClientTransportT]):
             sampling_callback
         )
 
+    def set_elicitation_callback(
+        self, elicitation_callback: ElicitationHandler
+    ) -> None:
+        """Set the elicitation callback for the client."""
+        self._session_kwargs["elicitation_callback"] = create_elicitation_callback(
+            elicitation_callback
+        )
+
     def is_connected(self) -> bool:
         """Check if the client is currently connected."""
         return self._session is not None
@@ -257,6 +286,21 @@ class Client(Generic[ClientTransportT]):
 
     async def __aenter__(self):
         await self._connect()
+
+        # Check if session task failed and raise error immediately
+        if (
+            self._session_task is not None
+            and self._session_task.done()
+            and not self._session_task.cancelled()
+        ):
+            exception = self._session_task.exception()
+            if isinstance(exception, httpx.HTTPStatusError):
+                raise exception
+            elif exception is not None:
+                raise RuntimeError(
+                    f"Client failed to connect: {exception}"
+                ) from exception
+
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -307,16 +351,21 @@ class Client(Generic[ClientTransportT]):
         self._initialize_result = None
 
     async def _session_runner(self):
-        async with AsyncExitStack() as stack:
-            try:
-                await stack.enter_async_context(self._context_manager())
-                # Session/context is now ready
-                self._ready_event.set()
-                # Wait until disconnect/stop is requested
-                await self._stop_event.wait()
-            finally:
-                # On exit, ensure ready event is set (idempotent)
-                self._ready_event.set()
+        try:
+            async with AsyncExitStack() as stack:
+                try:
+                    await stack.enter_async_context(self._context_manager())
+                    # Session/context is now ready
+                    self._ready_event.set()
+                    # Wait until disconnect/stop is requested
+                    await self._stop_event.wait()
+                finally:
+                    # On exit, ensure ready event is set (idempotent)
+                    self._ready_event.set()
+        except Exception:
+            # Ensure ready event is set even if context manager entry fails
+            self._ready_event.set()
+            raise
 
     async def close(self):
         await self._disconnect(force=True)
@@ -508,13 +557,13 @@ class Client(Generic[ClientTransportT]):
 
     # --- Prompt ---
     async def get_prompt_mcp(
-        self, name: str, arguments: dict[str, str] | None = None
+        self, name: str, arguments: dict[str, Any] | None = None
     ) -> mcp.types.GetPromptResult:
         """Send a prompts/get request and return the complete MCP protocol result.
 
         Args:
             name (str): The name of the prompt to retrieve.
-            arguments (dict[str, str] | None, optional): Arguments to pass to the prompt. Defaults to None.
+            arguments (dict[str, Any] | None, optional): Arguments to pass to the prompt. Defaults to None.
 
         Returns:
             mcp.types.GetPromptResult: The complete response object from the protocol,
@@ -523,17 +572,32 @@ class Client(Generic[ClientTransportT]):
         Raises:
             RuntimeError: If called while the client is not connected.
         """
-        result = await self.session.get_prompt(name=name, arguments=arguments)
+        # Serialize arguments for MCP protocol - convert non-string values to JSON
+        serialized_arguments: dict[str, str] | None = None
+        if arguments:
+            serialized_arguments = {}
+            for key, value in arguments.items():
+                if isinstance(value, str):
+                    serialized_arguments[key] = value
+                else:
+                    # Use pydantic_core.to_json for consistent serialization
+                    serialized_arguments[key] = pydantic_core.to_json(value).decode(
+                        "utf-8"
+                    )
+
+        result = await self.session.get_prompt(
+            name=name, arguments=serialized_arguments
+        )
         return result
 
     async def get_prompt(
-        self, name: str, arguments: dict[str, str] | None = None
+        self, name: str, arguments: dict[str, Any] | None = None
     ) -> mcp.types.GetPromptResult:
         """Retrieve a rendered prompt message list from the server.
 
         Args:
             name (str): The name of the prompt to retrieve.
-            arguments (dict[str, str] | None, optional): Arguments to pass to the prompt. Defaults to None.
+            arguments (dict[str, Any] | None, optional): Arguments to pass to the prompt. Defaults to None.
 
         Returns:
             mcp.types.GetPromptResult: The complete response object from the protocol,
@@ -659,7 +723,8 @@ class Client(Generic[ClientTransportT]):
         arguments: dict[str, Any] | None = None,
         timeout: datetime.timedelta | float | int | None = None,
         progress_handler: ProgressHandler | None = None,
-    ) -> list[MCPContent]:
+        raise_on_error: bool = True,
+    ) -> CallToolResult:
         """Call a tool on the server.
 
         Unlike call_tool_mcp, this method raises a ToolError if the tool call results in an error.
@@ -671,8 +736,13 @@ class Client(Generic[ClientTransportT]):
             progress_handler (ProgressHandler | None, optional): The progress handler to use for the tool call. Defaults to None.
 
         Returns:
-            list[mcp.types.TextContent | mcp.types.ImageContent | mcp.types.AudioContent | mcp.types.EmbeddedResource]:
-                The content returned by the tool.
+            CallToolResult:
+                The content returned by the tool. If the tool returns structured
+                outputs, they are returned as a dataclass (if an output schema
+                is available) or a dictionary; otherwise, a list of content
+                blocks is returned. Note: to receive both structured and
+                unstructured outputs, use call_tool_mcp instead and access the
+                raw result object.
 
         Raises:
             ToolError: If the tool call results in an error.
@@ -684,7 +754,43 @@ class Client(Generic[ClientTransportT]):
             timeout=timeout,
             progress_handler=progress_handler,
         )
-        if result.isError:
+        data = None
+        if result.isError and raise_on_error:
             msg = cast(mcp.types.TextContent, result.content[0]).text
             raise ToolError(msg)
-        return result.content
+        elif result.structuredContent:
+            try:
+                if name not in self.session._tool_output_schemas:
+                    await self.session.list_tools()
+                if name in self.session._tool_output_schemas:
+                    output_schema = self.session._tool_output_schemas.get(name)
+                    if output_schema:
+                        if output_schema.get("x-fastmcp-wrap-result"):
+                            output_schema = output_schema.get("properties", {}).get(
+                                "result"
+                            )
+                            structured_content = result.structuredContent.get("result")
+                        else:
+                            structured_content = result.structuredContent
+                        output_type = json_schema_to_type(output_schema)
+                        type_adapter = get_cached_typeadapter(output_type)
+                        data = type_adapter.validate_python(structured_content)
+                    else:
+                        data = result.structuredContent
+            except Exception as e:
+                logger.error(f"Error parsing structured content: {e}")
+
+        return CallToolResult(
+            content=result.content,
+            structured_content=result.structuredContent,
+            data=data,
+            is_error=result.isError,
+        )
+
+
+@dataclass
+class CallToolResult:
+    content: list[mcp.types.ContentBlock]
+    structured_content: dict[str, Any] | None
+    data: Any = None
+    is_error: bool = False
