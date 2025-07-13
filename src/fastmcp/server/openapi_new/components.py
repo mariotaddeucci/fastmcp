@@ -594,7 +594,7 @@ class CallableTool(Tool):
         except Exception as e:
             # Handle errors gracefully
             logger.error(f"Error in callable tool {self.name}: {e}")
-            return ToolResult(content=f"Error executing {self.name}: {str(e)}", is_error=True)
+            return ToolResult(content=f"Error executing {self.name}: {str(e)}")
 
 
 class CallableResource(Resource):
