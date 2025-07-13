@@ -2,6 +2,7 @@
 
 import re
 from collections import Counter
+from collections.abc import Callable
 from typing import Any, Literal
 
 import httpx
@@ -17,8 +18,16 @@ from fastmcp.utilities.openapi_new import (
     format_description_with_responses,
     parse_openapi_to_http_routes,
 )
+from fastmcp.utilities.openapi_new.callables import OASCallableFactory
 
-from .components import OpenAPIResource, OpenAPIResourceTemplate, OpenAPITool
+from .components import (
+    CallableResource,
+    CallableResourceTemplate,
+    CallableTool,
+    OpenAPIResource,
+    OpenAPIResourceTemplate,
+    OpenAPITool,
+)
 from .routing import (
     DEFAULT_ROUTE_MAPPINGS,
     ComponentFn,
@@ -143,6 +152,16 @@ class FastMCPOpenAPI(FastMCP):
             "prompt": Counter(),
         }
 
+        # Generate callables from OpenAPI spec using openapi-python-client
+        try:
+            base_url = str(client.base_url) if hasattr(client, 'base_url') and client.base_url else "http://localhost"
+            factory = OASCallableFactory(openapi_spec, base_url=base_url)
+            self._callables_map = factory.build()
+            logger.info(f"Generated {len(self._callables_map)} OpenAPI callables")
+        except Exception as e:
+            logger.warning(f"Could not generate callables: {e}, falling back to manual HTTP")
+            self._callables_map = {}
+
         http_routes = parse_openapi_to_http_routes(openapi_spec)
 
         # Process routes
@@ -176,12 +195,27 @@ class FastMCPOpenAPI(FastMCP):
 
             route_tags = set(route.tags) | route_map.mcp_tags | (tags or set())
 
+            # Check if we have a callable for this route
+            callable_func = None
+            if route.operation_id and route.operation_id in self._callables_map:
+                callable_func = self._callables_map[route.operation_id]
+                logger.debug(f"Found callable for route {route.method} {route.path}")
+
             if route_type == MCPType.TOOL:
-                self._create_openapi_tool(route, component_name, tags=route_tags)
+                if callable_func:
+                    self._create_callable_tool(route, callable_func, component_name, tags=route_tags)
+                else:
+                    self._create_openapi_tool(route, component_name, tags=route_tags)
             elif route_type == MCPType.RESOURCE:
-                self._create_openapi_resource(route, component_name, tags=route_tags)
+                if callable_func:
+                    self._create_callable_resource(route, callable_func, component_name, tags=route_tags)
+                else:
+                    self._create_openapi_resource(route, component_name, tags=route_tags)
             elif route_type == MCPType.RESOURCE_TEMPLATE:
-                self._create_openapi_template(route, component_name, tags=route_tags)
+                if callable_func:
+                    self._create_callable_template(route, callable_func, component_name, tags=route_tags)
+                else:
+                    self._create_openapi_template(route, component_name, tags=route_tags)
             elif route_type == MCPType.EXCLUDE:
                 logger.info(f"Excluding route: {route.method} {route.path}")
 
@@ -437,6 +471,203 @@ class FastMCPOpenAPI(FastMCP):
         self._resource_manager._templates[final_template_uri] = template
         logger.debug(
             f"Registered TEMPLATE: {final_template_uri} ({route.method} {route.path}) with tags: {route.tags}"
+        )
+
+    def _create_callable_tool(
+        self,
+        route: HTTPRoute,
+        callable_func: Callable,
+        name: str,
+        tags: set[str],
+    ):
+        """Creates and registers a CallableTool using generated callable."""
+        combined_schema = _combine_schemas(route)
+
+        # Extract output schema from OpenAPI responses
+        output_schema = extract_output_schema_from_responses(
+            route.responses, route.schema_definitions
+        )
+
+        # Get a unique tool name
+        tool_name = self._get_unique_name(name, "tool")
+
+        base_description = (
+            route.description
+            or route.summary
+            or f"Executes {route.method} {route.path}"
+        )
+
+        # Format enhanced description with parameters and request body
+        enhanced_description = format_description_with_responses(
+            base_description=base_description,
+            responses=route.responses,
+            parameters=route.parameters,
+            request_body=route.request_body,
+        )
+
+        tool = CallableTool(
+            callable_func=callable_func,
+            route=route,
+            name=tool_name,
+            description=enhanced_description,
+            parameters=combined_schema,
+            output_schema=output_schema,
+            tags=set(route.tags or []) | tags,
+        )
+
+        # Call component_fn if provided
+        if self._mcp_component_fn is not None:
+            try:
+                self._mcp_component_fn(route, tool)
+                logger.debug(f"Callable tool {tool_name} customized by component_fn")
+            except Exception as e:
+                logger.warning(
+                    f"Error in component_fn for callable tool {tool_name}: {e}. "
+                    f"Using component as-is."
+                )
+
+        # Use the potentially modified tool name as the registration key
+        final_tool_name = tool.name
+
+        # Register the tool by directly assigning to the tools dictionary
+        self._tool_manager._tools[final_tool_name] = tool
+        logger.debug(
+            f"Registered CALLABLE TOOL: {final_tool_name} ({route.method} {route.path}) with tags: {route.tags}"
+        )
+
+    def _create_callable_resource(
+        self,
+        route: HTTPRoute,
+        callable_func: Callable,
+        name: str,
+        tags: set[str],
+    ):
+        """Creates and registers a CallableResource using generated callable."""
+        # Get a unique resource name
+        resource_name = self._get_unique_name(name, "resource")
+
+        resource_uri = f"resource://{resource_name}"
+        base_description = (
+            route.description or route.summary or f"Represents {route.path}"
+        )
+
+        # Format enhanced description with parameters and request body
+        enhanced_description = format_description_with_responses(
+            base_description=base_description,
+            responses=route.responses,
+            parameters=route.parameters,
+            request_body=route.request_body,
+        )
+
+        resource = CallableResource(
+            callable_func=callable_func,
+            route=route,
+            uri=resource_uri,
+            name=resource_name,
+            description=enhanced_description,
+            tags=set(route.tags or []) | tags,
+        )
+
+        # Call component_fn if provided
+        if self._mcp_component_fn is not None:
+            try:
+                self._mcp_component_fn(route, resource)
+                logger.debug(f"Callable resource {resource_uri} customized by component_fn")
+            except Exception as e:
+                logger.warning(
+                    f"Error in component_fn for callable resource {resource_uri}: {e}. "
+                    f"Using component as-is."
+                )
+
+        # Use the potentially modified resource URI as the registration key
+        final_resource_uri = str(resource.uri)
+
+        # Register the resource by directly assigning to the resources dictionary
+        self._resource_manager._resources[final_resource_uri] = resource
+        logger.debug(
+            f"Registered CALLABLE RESOURCE: {final_resource_uri} ({route.method} {route.path}) with tags: {route.tags}"
+        )
+
+    def _create_callable_template(
+        self,
+        route: HTTPRoute,
+        callable_func: Callable,
+        name: str,
+        tags: set[str],
+    ):
+        """Creates and registers a CallableResourceTemplate using generated callable."""
+        # Get a unique template name
+        template_name = self._get_unique_name(name, "resource_template")
+
+        path_params = [p.name for p in route.parameters if p.location == "path"]
+        path_params.sort()  # Sort for consistent URIs
+
+        uri_template_str = f"resource://{template_name}"
+        if path_params:
+            uri_template_str += "/" + "/".join(f"{{{p}}}" for p in path_params)
+
+        base_description = (
+            route.description or route.summary or f"Template for {route.path}"
+        )
+
+        # Format enhanced description with parameters and request body
+        enhanced_description = format_description_with_responses(
+            base_description=base_description,
+            responses=route.responses,
+            parameters=route.parameters,
+            request_body=route.request_body,
+        )
+
+        template_params_schema = {
+            "type": "object",
+            "properties": {
+                p.name: {
+                    **(p.schema_.copy() if isinstance(p.schema_, dict) else {}),
+                    **(
+                        {"description": p.description}
+                        if p.description
+                        and not (
+                            isinstance(p.schema_, dict) and "description" in p.schema_
+                        )
+                        else {}
+                    ),
+                }
+                for p in route.parameters
+                if p.location == "path"
+            },
+            "required": [
+                p.name for p in route.parameters if p.location == "path" and p.required
+            ],
+        }
+
+        template = CallableResourceTemplate(
+            callable_func=callable_func,
+            route=route,
+            uri_template=uri_template_str,
+            name=template_name,
+            description=enhanced_description,
+            parameters=template_params_schema,
+            tags=set(route.tags or []) | tags,
+        )
+
+        # Call component_fn if provided
+        if self._mcp_component_fn is not None:
+            try:
+                self._mcp_component_fn(route, template)
+                logger.debug(f"Callable template {uri_template_str} customized by component_fn")
+            except Exception as e:
+                logger.warning(
+                    f"Error in component_fn for callable template {uri_template_str}: {e}. "
+                    f"Using component as-is."
+                )
+
+        # Use the potentially modified template URI as the registration key
+        final_template_uri = template.uri_template
+
+        # Register the template by directly assigning to the templates dictionary
+        self._resource_manager._templates[final_template_uri] = template
+        logger.debug(
+            f"Registered CALLABLE TEMPLATE: {final_template_uri} ({route.method} {route.path}) with tags: {route.tags}"
         )
 
 

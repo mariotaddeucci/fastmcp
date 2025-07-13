@@ -6,9 +6,19 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from re import Pattern
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import fastmcp
+
+if TYPE_CHECKING:
+    from .components import (
+        CallableResource,
+        CallableResourceTemplate,
+        CallableTool,
+        OpenAPIResource,
+        OpenAPIResourceTemplate,
+        OpenAPITool,
+    )
 from fastmcp.utilities.logging import get_logger
 
 # Import from our new utilities
@@ -21,7 +31,7 @@ RouteMapFn = Callable[[HTTPRoute, "MCPType"], "MCPType | None"]
 ComponentFn = Callable[
     [
         HTTPRoute,
-        "OpenAPITool | OpenAPIResource | OpenAPIResourceTemplate",
+        "OpenAPITool | OpenAPIResource | OpenAPIResourceTemplate | CallableTool | CallableResource | CallableResourceTemplate",
     ],
     None,
 ]

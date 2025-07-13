@@ -6,8 +6,14 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import pydantic
 from mcp.types import ToolAnnotations
 from pydantic.networks import AnyUrl
+
+try:
+    import pydantic.v1 as pydantic_v1
+except ImportError:
+    pydantic_v1 = None
 
 from fastmcp.exceptions import ToolError
 from fastmcp.resources import Resource, ResourceTemplate
@@ -497,9 +503,221 @@ class OpenAPIResourceTemplate(ResourceTemplate):
         )
 
 
+class CallableTool(Tool):
+    """Tool implementation that wraps a generated OpenAPI callable."""
+
+    def __init__(
+        self,
+        callable_func: Callable[..., Any],
+        route: HTTPRoute,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        output_schema: dict[str, Any] | None = None,
+        tags: set[str] | None = None,
+        annotations: ToolAnnotations | None = None,
+        serializer: Callable[[Any], str] | None = None,
+    ):
+        super().__init__(
+            name=name,
+            description=description,
+            parameters=parameters,
+            output_schema=output_schema,
+            tags=tags or set(),
+            annotations=annotations,
+            serializer=serializer,
+        )
+        self._callable = callable_func
+        self._route = route
+
+    def __repr__(self) -> str:
+        """Custom representation to prevent recursion errors when printing."""
+        return f"CallableTool(name={self.name!r}, method={self._route.method}, path={self._route.path})"
+
+    async def run(self, arguments: dict[str, Any]) -> ToolResult:
+        """Execute the callable function based on the route configuration."""
+        try:
+            # Remove FastMCP-specific arguments that the generated callable won't expect
+            clean_arguments = {k: v for k, v in arguments.items() if k != 'context'}
+            
+            # Call the generated function
+            response = await self._callable(**clean_arguments)
+            
+                
+            # Handle the response from the generated client
+            if hasattr(response, 'parsed') and response.parsed is not None:
+                # Generated client returned a structured response
+                structured_output = response.parsed
+                
+                # Handle output schema wrapping if needed
+                if self.output_schema is not None:
+                    if self.output_schema.get("x-fastmcp-wrap-result"):
+                        # Schema says wrap - always wrap in result key
+                        structured_output = {"result": structured_output}
+                # If no output schema, use fallback logic for backward compatibility
+                elif not isinstance(structured_output, dict):
+                    structured_output = {"result": structured_output}
+                
+                return ToolResult(structured_content=structured_output)
+            elif hasattr(response, 'content'):
+                # Response has raw content
+                return ToolResult(content=response.content)
+            else:
+                # Response is likely a Pydantic model from openapi-python-client
+                # Convert to dict for structured output
+                if isinstance(response, pydantic.BaseModel):
+                    # Pydantic v2 model
+                    structured_output = response.model_dump()
+                elif pydantic_v1 and isinstance(response, pydantic_v1.BaseModel):
+                    # Pydantic v1 model
+                    structured_output = response.dict()
+                elif hasattr(response, 'to_dict'):
+                    # Generated client model with to_dict method (attrs or other)
+                    structured_output = response.to_dict()
+                elif isinstance(response, dict):
+                    structured_output = response
+                else:
+                    # Fallback to string content
+                    return ToolResult(content=str(response))
+                
+                # Handle output schema wrapping if needed
+                if self.output_schema is not None:
+                    if self.output_schema.get("x-fastmcp-wrap-result"):
+                        # Schema says wrap - always wrap in result key
+                        structured_output = {"result": structured_output}
+                # If no output schema, use fallback logic for backward compatibility
+                elif not isinstance(structured_output, dict):
+                    structured_output = {"result": structured_output}
+                
+                return ToolResult(structured_content=structured_output)
+
+        except Exception as e:
+            # Handle errors gracefully
+            logger.error(f"Error in callable tool {self.name}: {e}")
+            return ToolResult(content=f"Error executing {self.name}: {str(e)}", is_error=True)
+
+
+class CallableResource(Resource):
+    """Resource implementation that wraps a generated OpenAPI callable."""
+
+    def __init__(
+        self,
+        callable_func: Callable[..., Any],
+        route: HTTPRoute,
+        uri: str,
+        name: str,
+        description: str,
+        mime_type: str = "application/json",
+        tags: set[str] = set(),
+    ):
+        super().__init__(
+            uri=AnyUrl(uri),  # Convert string to AnyUrl
+            name=name,
+            description=description,
+            mime_type=mime_type,
+            tags=tags,
+        )
+        self._callable = callable_func
+        self._route = route
+
+    def __repr__(self) -> str:
+        """Custom representation to prevent recursion errors when printing."""
+        return f"CallableResource(name={self.name!r}, uri={self.uri!r}, path={self._route.path})"
+
+    async def read(self) -> str | bytes:
+        """Fetch the resource data by calling the generated function."""
+        try:
+            # Call the generated function (no parameters for basic resources)
+            response = await self._callable()
+
+            # Handle the response content
+            if hasattr(response, 'parsed') and response.parsed is not None:
+                # Return JSON-serialized parsed content
+                return json.dumps(response.parsed)
+            elif hasattr(response, 'content'):
+                # Return raw content
+                if isinstance(response.content, bytes):
+                    return response.content
+                else:
+                    return str(response.content)
+            else:
+                # Response is likely a Pydantic model from openapi-python-client
+                if isinstance(response, pydantic.BaseModel):
+                    # Pydantic v2 model
+                    return json.dumps(response.model_dump())
+                elif pydantic_v1 and isinstance(response, pydantic_v1.BaseModel):
+                    # Pydantic v1 model
+                    return json.dumps(response.dict())
+                elif hasattr(response, 'to_dict'):
+                    # Generated client model with to_dict method (attrs or other)
+                    return json.dumps(response.to_dict())
+                elif isinstance(response, dict | list):
+                    return json.dumps(response)
+                else:
+                    return str(response)
+
+        except Exception as e:
+            logger.error(f"Error in callable resource {self.name}: {e}")
+            raise ValueError(f"Error reading resource {self.name}: {str(e)}")
+
+
+class CallableResourceTemplate(ResourceTemplate):
+    """Resource template implementation that wraps a generated OpenAPI callable."""
+
+    def __init__(
+        self,
+        callable_func: Callable[..., Any],
+        route: HTTPRoute,
+        uri_template: str,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+        tags: set[str] = set(),
+    ):
+        super().__init__(
+            uri_template=uri_template,
+            name=name,
+            description=description,
+            parameters=parameters,
+            tags=tags,
+        )
+        self._callable = callable_func
+        self._route = route
+
+    def __repr__(self) -> str:
+        """Custom representation to prevent recursion errors when printing."""
+        return f"CallableResourceTemplate(name={self.name!r}, uri_template={self.uri_template!r}, path={self._route.path})"
+
+    async def create_resource(
+        self,
+        uri: str,
+        params: dict[str, Any],
+        context: "Context | None" = None,
+    ) -> Resource:
+        """Create a resource with the given parameters."""
+        from functools import partial
+
+        # Create a bound callable with the provided parameters
+        bound_callable = partial(self._callable, **params)
+
+        # Create and return a CallableResource instance
+        return CallableResource(
+            callable_func=bound_callable,
+            route=self._route,
+            uri=uri,
+            name=f"{self.name}-{'-'.join(f'{k}={v}' for k, v in params.items())}",
+            description=self.description or f"Resource for {self._route.path}",
+            mime_type="application/json",
+            tags=set(self._route.tags or []),
+        )
+
+
 # Export public symbols
 __all__ = [
     "OpenAPITool",
-    "OpenAPIResource",
+    "OpenAPIResource", 
     "OpenAPIResourceTemplate",
+    "CallableTool",
+    "CallableResource",
+    "CallableResourceTemplate",
 ]
