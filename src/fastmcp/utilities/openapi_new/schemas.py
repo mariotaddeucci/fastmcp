@@ -151,19 +151,24 @@ def _make_optional_parameter_nullable(schema: dict[str, Any]) -> dict[str, Any]:
     return schema
 
 
-def _combine_schemas(route: HTTPRoute) -> dict[str, Any]:
+def _combine_schemas_and_map_params(
+    route: HTTPRoute,
+) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
     """
     Combines parameter and request body schemas into a single schema.
     Handles parameter name collisions by adding location suffixes.
+    Also returns parameter mapping for request director.
 
     Args:
         route: HTTPRoute object
 
     Returns:
-        Combined schema dictionary
+        Tuple of (combined schema dictionary, parameter mapping)
+        Parameter mapping format: {'flat_arg_name': {'location': 'path', 'openapi_name': 'id'}}
     """
     properties = {}
     required = []
+    parameter_map = {}  # Track mapping from flat arg names to OpenAPI locations
 
     # First pass: collect parameter names by location and body properties
     param_names_by_location = {
@@ -201,6 +206,12 @@ def _combine_schemas(route: HTTPRoute) -> dict[str, Any]:
             if param.required:
                 required.append(suffixed_name)
 
+            # Track parameter mapping
+            parameter_map[suffixed_name] = {
+                "location": param.location,
+                "openapi_name": param.name,
+            }
+
             # Add location info to description
             param_schema = _replace_ref_with_defs(
                 param.schema_.copy(), param.description
@@ -221,6 +232,13 @@ def _combine_schemas(route: HTTPRoute) -> dict[str, Any]:
             # No collision, use original name
             if param.required:
                 required.append(param.name)
+
+            # Track parameter mapping
+            parameter_map[param.name] = {
+                "location": param.location,
+                "openapi_name": param.name,
+            }
+
             param_schema = _replace_ref_with_defs(
                 param.schema_.copy(), param.description
             )
@@ -235,6 +253,9 @@ def _combine_schemas(route: HTTPRoute) -> dict[str, Any]:
     if route.request_body and route.request_body.content_schema:
         for prop_name, prop_schema in body_props.items():
             properties[prop_name] = prop_schema
+
+            # Track parameter mapping for body properties
+            parameter_map[prop_name] = {"location": "body", "openapi_name": prop_name}
 
         if route.request_body.required:
             required.extend(body_schema.get("required", []))
@@ -251,7 +272,24 @@ def _combine_schemas(route: HTTPRoute) -> dict[str, Any]:
     # Use compress_schema to remove unused definitions
     result = compress_schema(result)
 
-    return result
+    return result, parameter_map
+
+
+def _combine_schemas(route: HTTPRoute) -> dict[str, Any]:
+    """
+    Combines parameter and request body schemas into a single schema.
+    Handles parameter name collisions by adding location suffixes.
+
+    This is a backward compatibility wrapper around _combine_schemas_and_map_params.
+
+    Args:
+        route: HTTPRoute object
+
+    Returns:
+        Combined schema dictionary
+    """
+    schema, _ = _combine_schemas_and_map_params(route)
+    return schema
 
 
 def _adjust_union_types(
@@ -366,6 +404,7 @@ def extract_output_schema_from_responses(
 __all__ = [
     "clean_schema_for_display",
     "_combine_schemas",
+    "_combine_schemas_and_map_params",
     "extract_output_schema_from_responses",
     "_replace_ref_with_defs",
     "_make_optional_parameter_nullable",

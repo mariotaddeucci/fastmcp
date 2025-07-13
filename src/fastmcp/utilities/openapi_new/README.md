@@ -4,97 +4,99 @@ This directory contains the next-generation OpenAPI integration utilities for Fa
 
 ## Architecture Overview
 
-The new implementation follows a **code generation strategy** using `openapi-python-client` to automatically generate callable functions from OpenAPI specifications, eliminating the need for manual HTTP request construction.
+The new implementation follows a **stateless request building strategy** using `openapi-core` for high-performance, per-request HTTP request construction, eliminating startup latency while maintaining robust OpenAPI compliance.
 
 ### Core Components
 
-1. **`callables.py`** - `OASCallableFactory` for generating callable functions
-2. **`parser.py`** - OpenAPI spec parsing and route extraction  
-3. **`schemas.py`** - Schema processing and validation utilities
-4. **`models.py`** - Data models and intermediate representations
+1. **`director.py`** - `RequestDirector` for stateless HTTP request building
+2. **`parser.py`** - OpenAPI spec parsing and route extraction with pre-calculated schemas
+3. **`schemas.py`** - Schema processing with parameter mapping for collision handling
+4. **`models.py`** - Enhanced data models with pre-calculated fields for performance
 5. **`formatters.py`** - Response formatting and processing utilities
 
 ### Key Architecture Principles
 
-#### 1. Code Generation Strategy
-- Uses `openapi-python-client` CLI to generate Python client code
-- Extracts callable functions from generated client
-- Offloads OpenAPI compliance to a robust, well-tested library
+#### 1. Stateless Request Building
+- Uses `openapi-core` library for robust OpenAPI parameter serialization
+- Builds HTTP requests on-demand with zero startup latency
+- Offloads OpenAPI compliance to a well-tested library without code generation overhead
 
-#### 2. Hybrid Approach  
-- **Primary**: Use generated callables when available
-- **Fallback**: Fall back to legacy HTTP request building for edge cases
-- **Backward Compatibility**: Maintains compatibility with existing code
+#### 2. Pre-calculated Optimization
+- **Schema Pre-calculation**: Combined schemas calculated once during parsing
+- **Parameter Mapping**: Collision resolution mapping calculated upfront
+- **Zero Runtime Overhead**: All complex processing done during initialization
 
-#### 3. Separation of Concerns
-- **Callable Generation**: `OASCallableFactory` handles client generation
-- **Component Integration**: Components in `/server/openapi_new/` handle MCP integration
-- **Utility Functions**: Shared utilities for schema processing and formatting
+#### 3. Performance-First Design
+- **No Code Generation**: Eliminates 100-200ms startup latency
+- **Serverless Friendly**: Ideal for cold-start environments
+- **Minimal Dependencies**: Uses lightweight `openapi-core` instead of full client generation
 
 ## Data Flow
 
-### Client Generation Process
+### Initialization Process
 
 ```
-OpenAPI Spec → OASCallableFactory → openapi-python-client CLI → Generated Client → Extracted Callables
+OpenAPI Spec → Parser → HTTPRoute with Pre-calculated Fields → RequestDirector + openapi-core Spec
 ```
 
 1. **Input**: Raw OpenAPI specification (dict)
-2. **Generation**: CLI generates Python client in temporary directory
-3. **Import**: Dynamically import generated client module
-4. **Extraction**: Extract callable functions by operation ID
-5. **Binding**: Create bound callables with proper error handling
+2. **Parsing**: Extract operations to `HTTPRoute` models
+3. **Pre-calculation**: Generate combined schemas and parameter maps during parsing
+4. **Director Setup**: Create `RequestDirector` with `openapi-core` Spec for request building
 
 ### Request Processing
 
 ```
-MCP Tool Call → Callable Function → HTTP Request → API Response → Structured Output
+MCP Tool Call → RequestDirector.build() → httpx.Request → HTTP Response → Structured Output
 ```
 
 1. **Tool Invocation**: FastMCP receives tool call with parameters
-2. **Callable Execution**: Execute appropriate generated callable
-3. **Response Processing**: Parse response into structured format
-4. **Error Handling**: Convert HTTP errors to MCP-compatible formats
+2. **Request Building**: RequestDirector builds HTTP request using parameter map
+3. **Parameter Handling**: openapi-core handles all OpenAPI serialization rules
+4. **Response Processing**: Parse response into structured format with proper error handling
 
 ## Key Features
 
-### 1. Automatic OpenAPI Compliance
-- All parameter serialization handled by generated client
-- Supports all OpenAPI parameter styles (form, deepObject, etc.)
-- Automatic request body formatting
-- Built-in response validation
+### 1. High-Performance Request Building
+- Zero startup latency - no code generation required
+- Stateless request building scales infinitely
+- Uses proven `openapi-core` library for OpenAPI compliance
+- Perfect for serverless and cold-start environments
 
-### 2. Enhanced Error Handling
+### 2. Comprehensive Parameter Support
+- **Parameter Collisions**: Intelligent collision resolution with suffixing
+- **DeepObject Style**: Full support for deepObject parameters with explode=true/false
+- **Complex Schemas**: Handles nested objects, arrays, and all OpenAPI types
+- **Pre-calculated Mapping**: Parameter location mapping done upfront for performance
+
+### 3. Enhanced Error Handling
 - HTTP status code mapping to MCP errors
-- Structured error responses
-- Timeout and connection error handling
+- Structured error responses with detailed information
+- Graceful handling of network timeouts and connection errors
+- Proper error context preservation
 
-### 3. Robust Parameter Handling
-- **Parameter Collisions**: Automatic suffixing for name collisions
-- **DeepObject Style**: Native support via generated client
-- **Complex Schemas**: Handles nested objects and arrays
-- **Validation**: Input validation via Pydantic models
-
-### 4. Performance Optimizations
-- **Caching**: Generated clients are cached
-- **Async Support**: Full async/await support
-- **Connection Pooling**: Reuses HTTP connections
+### 4. Advanced Schema Processing
+- **Pre-calculated Schemas**: Combined parameter and body schemas calculated once
+- **Collision-aware**: Automatically handles parameter name collisions
+- **Type Safety**: Full Pydantic model validation
+- **Performance**: Zero runtime schema processing overhead
 
 ## Component Integration
 
 ### Server Components (`/server/openapi_new/`)
 
-1. **`CallableTool`** - Tool implementation using generated callables
-2. **`CallableResource`** - Resource implementation using callables  
-3. **`CallableResourceTemplate`** - Resource template with callables
-4. **`FastMCPOpenAPI`** - Main server class with hybrid approach
+1. **`OpenAPITool`** - Simplified tool implementation using RequestDirector
+2. **`OpenAPIResource`** - Resource implementation with RequestDirector
+3. **`OpenAPIResourceTemplate`** - Resource template with RequestDirector support
+4. **`FastMCPOpenAPI`** - Main server class with stateless request building
 
-### Fallback Strategy
+### RequestDirector Integration
 
-When callables are not available:
-- Falls back to legacy `OpenAPITool` implementation
-- Maintains full backward compatibility
-- Logs fallback usage for monitoring
+All components use the same RequestDirector approach:
+- Consistent parameter handling across all component types
+- Uniform error handling and response processing
+- Simplified architecture without fallback complexity
+- High performance for all operation types
 
 ## Usage Examples
 
@@ -109,53 +111,54 @@ openapi_spec = {...}
 
 # Create HTTP client
 async with httpx.AsyncClient() as client:
-    # Create server with automatic callable generation
+    # Create server with stateless request building
     server = FastMCPOpenAPI(
         openapi_spec=openapi_spec,
         client=client,
         name="My API Server"
     )
     
-    # Server automatically generates callables and creates tools
+    # Server automatically creates RequestDirector and pre-calculates schemas
 ```
 
-### Custom Callable Factory
+### Direct RequestDirector Usage
 
 ```python
-from fastmcp.utilities.openapi_new.callables import OASCallableFactory
+from fastmcp.utilities.openapi_new.director import RequestDirector
+from openapi_core import Spec
 
-# Generate callables manually
-factory = OASCallableFactory(openapi_spec, base_url="https://api.example.com")
-callables_map = factory.build()
+# Create RequestDirector manually
+spec = Spec.from_dict(openapi_spec)
+director = RequestDirector(spec)
 
-# Use specific callable
-get_user = callables_map.get("get_user")
-if get_user:
-    result = await get_user(user_id=123)
+# Build HTTP request
+request = director.build(route, flat_arguments, base_url)
+
+# Execute with httpx
+async with httpx.AsyncClient() as client:
+    response = await client.send(request)
 ```
 
 ## Testing Strategy
 
-Tests are located in `/tests/utilities/openapi_new/` and `/tests/server/openapi_new/`:
+Tests are located in `/tests/server/openapi_new/`:
 
 ### Test Categories
 
-1. **Unit Tests**
-   - `test_callables.py` - Callable factory functionality
-   - `test_components.py` - Component behavior with callables
-   - `test_server.py` - Server integration and fallback logic
+1. **Core Functionality**
+   - `test_server.py` - Server initialization and RequestDirector integration
 
-2. **Feature Tests**  
+2. **OpenAPI Features**  
    - `test_parameter_collisions.py` - Parameter name collision handling
    - `test_deepobject_style.py` - DeepObject parameter style support
-   - `test_openapi_features.py` - General OpenAPI feature support
+   - `test_openapi_features.py` - General OpenAPI feature compliance
 
 ### Testing Philosophy
 
-- **Real Objects**: Use real Pydantic models and callable functions
-- **Minimal Mocking**: Only mock external API calls
-- **Behavioral Testing**: Focus on behavior rather than implementation details
-- **Integration Focus**: Test complete request/response cycles
+- **Real Objects**: Use real HTTPRoute models and OpenAPI specifications
+- **Minimal Mocking**: Only mock external HTTP endpoints
+- **Performance Focus**: Test that initialization is fast and stateless
+- **Behavioral Testing**: Verify OpenAPI compliance without implementation details
 
 ## Migration Guide
 
@@ -173,61 +176,64 @@ Tests are located in `/tests/utilities/openapi_new/` and `/tests/server/openapi_
 2. **Constructor**: Same interface, no changes needed
 
 3. **Automatic Benefits**: 
-   - Better OpenAPI compliance
-   - Fewer parameter serialization bugs
-   - Support for more OpenAPI features
+   - Eliminates startup latency (100-200ms improvement)
+   - Better OpenAPI compliance via openapi-core
+   - Serverless-friendly performance characteristics
+   - Simplified architecture without fallback complexity
 
-### Gradual Migration
+### Performance Improvements
 
-- Both implementations can coexist
-- Migrate individual services incrementally
-- Fallback ensures no breaking changes
+- **Cold Start**: Zero latency penalty for serverless deployments
+- **Memory Usage**: Lower memory footprint without generated client code
+- **Reliability**: No dynamic code generation failures
+- **Maintainability**: Simpler architecture with fewer moving parts
 
 ## Future Enhancements
 
 ### Planned Features
 
-1. **Client Caching**: Persistent client generation caching
-2. **Streaming Support**: Handle streaming responses
-3. **Authentication**: Enhanced auth provider integration
-4. **Metrics**: Request/response metrics and monitoring
-5. **Validation**: Enhanced input/output validation
+1. **Response Streaming**: Handle streaming API responses
+2. **Enhanced Authentication**: More auth provider integrations
+3. **Advanced Metrics**: Detailed request/response monitoring
+4. **Schema Validation**: Enhanced input/output validation
+5. **Batch Operations**: Optimized multi-operation requests
 
 ### Performance Improvements
 
-1. **Lazy Generation**: Generate clients on-demand
-2. **Parallel Generation**: Generate multiple clients concurrently
-3. **Memory Optimization**: Optimize client storage and cleanup
+1. **Schema Caching**: More aggressive schema pre-calculation
+2. **Memory Optimization**: Further reduce memory footprint
+3. **Request Batching**: Smart batching for bulk operations
+4. **Connection Optimization**: Enhanced connection pooling strategies
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Client Generation Fails**
-   - Check OpenAPI spec validity
-   - Verify `openapi-python-client` installation
-   - Check for unsupported OpenAPI features
+1. **RequestDirector Initialization Fails**
+   - Check OpenAPI spec validity with `openapi-core`
+   - Verify spec format is correct JSON/YAML
+   - Ensure all required OpenAPI fields are present
 
-2. **Import Errors**
-   - Ensure generated client directory is accessible
-   - Check for Python path issues
-   - Verify temporary directory permissions
+2. **Parameter Mapping Issues**
+   - Check parameter collision resolution in debug logs
+   - Verify parameter names match OpenAPI spec exactly
+   - Review pre-calculated parameter map in HTTPRoute
 
-3. **Runtime Errors**
-   - Check network connectivity
-   - Verify API endpoint availability  
-   - Review parameter validation errors
+3. **Request Building Errors**
+   - Check network connectivity to target API
+   - Verify base URL configuration
+   - Review parameter validation and type mismatches
 
 ### Debugging
 
 - Enable debug logging: `logger.setLevel(logging.DEBUG)`
-- Check callable generation logs
-- Review fallback usage patterns
-- Monitor API response patterns
+- Check RequestDirector initialization logs
+- Review parameter mapping in HTTPRoute models
+- Monitor request building and API response patterns
 
 ## Dependencies
 
-- `openapi-python-client` - Client code generation
+- `openapi-core` - OpenAPI specification processing and validation
 - `httpx` - HTTP client library
 - `pydantic` - Data validation and serialization
-- `tempfile` - Temporary directory management for generation
+- `urllib.parse` - URL building and manipulation

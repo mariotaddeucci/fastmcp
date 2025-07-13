@@ -33,7 +33,7 @@ from .models import (
     RequestBodyInfo,
     ResponseInfo,
 )
-from .schemas import _replace_ref_with_defs
+from .schemas import _combine_schemas_and_map_params, _replace_ref_with_defs
 
 logger = logging.getLogger(__name__)
 
@@ -544,6 +544,7 @@ class OpenAPIParser(
                                 if k.startswith("x-")
                             }
 
+                        # Create initial route without pre-calculated fields
                         route = HTTPRoute(
                             path=path_str,
                             method=method_upper,  # type: ignore[arg-type]  # Known valid HTTP method
@@ -557,6 +558,24 @@ class OpenAPIParser(
                             schema_definitions=schema_definitions,
                             extensions=extensions,
                         )
+
+                        # Pre-calculate schema and parameter mapping for performance
+                        try:
+                            flat_schema, param_map = _combine_schemas_and_map_params(
+                                route
+                            )
+                            route.flat_param_schema = flat_schema
+                            route.parameter_map = param_map
+                        except Exception as schema_error:
+                            logger.warning(
+                                f"Failed to pre-calculate schema for route {method_upper} {path_str}: {schema_error}"
+                            )
+                            # Continue with empty pre-calculated fields
+                            route.flat_param_schema = {
+                                "type": "object",
+                                "properties": {},
+                            }
+                            route.parameter_map = {}
                         routes.append(route)
                         logger.info(
                             f"Successfully extracted route: {method_upper} {path_str}"

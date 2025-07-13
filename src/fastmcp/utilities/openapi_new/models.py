@@ -63,6 +63,14 @@ class HTTPRoute(FastMCPBaseModel):
     )  # Store component schemas
     extensions: dict[str, Any] = Field(default_factory=dict)
 
+    # Pre-calculated fields for performance
+    flat_param_schema: JsonSchema = Field(
+        default_factory=dict
+    )  # Combined schema for MCP tools
+    parameter_map: dict[str, dict[str, str]] = Field(
+        default_factory=dict
+    )  # Maps flat args to locations
+
 
 # Export public symbols
 __all__ = [
