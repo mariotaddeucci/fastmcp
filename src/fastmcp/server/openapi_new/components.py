@@ -79,10 +79,14 @@ class OpenAPITool(Tool):
                 if request.headers:
                     request.headers.update(mcp_headers)
                 else:
-                    request.headers = mcp_headers
+                    # Create new headers from mcp_headers
+                    for key, value in mcp_headers.items():
+                        request.headers[key] = value
 
             # Execute the request
-            response = await self._client.send(request, timeout=self._timeout)
+            # Note: httpx.AsyncClient.send() doesn't accept timeout parameter
+            # The timeout should be configured on the client itself
+            response = await self._client.send(request)
 
             # Raise for 4xx/5xx responses
             response.raise_for_status()
@@ -296,6 +300,7 @@ class OpenAPIResourceTemplate(ResourceTemplate):
         return OpenAPIResource(
             client=self._client,
             route=self._route,
+            director=self._director,
             uri=uri,
             name=f"{self.name}-{'-'.join(uri_parts)}",
             description=self.description or f"Resource for {self._route.path}",

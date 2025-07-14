@@ -491,7 +491,7 @@ class TestOpenAPIComprehensive:
 
         async with Client(server) as mcp_client:
             # Test GET request with path parameter
-            result = await mcp_client.call_tool("get_user", {"id": 123})
+            await mcp_client.call_tool("get_user", {"id": 123})
 
             # Should have made a request
             mock_client.send.assert_called_once()
@@ -528,7 +528,7 @@ class TestOpenAPIComprehensive:
 
         async with Client(server) as mcp_client:
             # Test POST request with body
-            result = await mcp_client.call_tool(
+            await mcp_client.call_tool(
                 "create_user",
                 {
                     "name": "New User",
@@ -572,7 +572,7 @@ class TestOpenAPIComprehensive:
 
         async with Client(server) as mcp_client:
             # Test GET request with query parameters
-            result = await mcp_client.call_tool(
+            await mcp_client.call_tool(
                 "list_users",
                 {
                     "limit": 20,
@@ -663,8 +663,6 @@ class TestOpenAPIComprehensive:
                 # Check list_users tool - has optional query parameters
                 list_tool = next(tool for tool in tools if tool.name == "list_users")
                 schema = list_tool.inputSchema
-                required = schema.get("required", [])
-
                 # Query parameters should be optional
                 # (may not appear in required list)
                 # This test just ensures the schema is well-formed
@@ -675,8 +673,6 @@ class TestOpenAPIComprehensive:
                     tool for tool in tools if tool.name == "search_users"
                 )
                 search_schema = search_tool.inputSchema
-                search_required = search_schema.get("required", [])
-
                 # Should have some required parameters
                 assert len(search_schema["properties"]) > 0
 

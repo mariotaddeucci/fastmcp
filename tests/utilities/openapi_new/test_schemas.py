@@ -212,7 +212,6 @@ class TestSchemaProcessing:
         combined_schema, param_map = _combine_schemas_and_map_params(complex_route)
 
         # Should have all parameters mapped
-        expected_locations = {"path", "query", "header", "body"}
         actual_locations = {mapping["location"] for mapping in param_map.values()}
 
         # Should have representatives from each location

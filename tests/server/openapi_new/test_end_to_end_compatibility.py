@@ -293,7 +293,7 @@ class TestEndToEndCompatibility:
             async with Client(legacy_server) as legacy_client:
                 async with Client(new_server) as new_client:
                     legacy_tools = await legacy_client.list_tools()
-                    new_tools = await new_client.list_tools()
+                    await new_client.list_tools()
 
                     tool_name = legacy_tools[0].name
 

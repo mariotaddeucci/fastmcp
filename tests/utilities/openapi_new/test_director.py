@@ -459,4 +459,4 @@ class TestRequestDirectorIntegration:
             request = director.build(route, flat_args, "https://api.example.com")
 
             assert request.method == "GET"
-            assert request.url.startswith("https://api.example.com/search")
+            assert str(request.url).startswith("https://api.example.com/search")

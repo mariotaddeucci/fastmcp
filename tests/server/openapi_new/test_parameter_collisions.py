@@ -9,7 +9,7 @@ from fastmcp.server.openapi_new import FastMCPOpenAPI
 
 class TestParameterCollisions:
     """Test parameter name collisions between different locations (path, query, body)."""
-    
+
     @pytest.fixture
     def collision_spec(self):
         """OpenAPI spec with parameter name collisions."""
@@ -28,7 +28,7 @@ class TestParameterCollisions:
                                 "in": "path",
                                 "required": True,
                                 "schema": {"type": "integer"},
-                                "description": "User ID in path"
+                                "description": "User ID in path",
                             }
                         ],
                         "requestBody": {
@@ -39,22 +39,22 @@ class TestParameterCollisions:
                                         "type": "object",
                                         "properties": {
                                             "id": {
-                                                "type": "integer", 
-                                                "description": "User ID in body (different from path)"
+                                                "type": "integer",
+                                                "description": "User ID in body (different from path)",
                                             },
                                             "name": {
                                                 "type": "string",
-                                                "description": "User name"
+                                                "description": "User name",
                                             },
                                             "email": {
                                                 "type": "string",
-                                                "description": "User email"
-                                            }
+                                                "description": "User email",
+                                            },
                                         },
-                                        "required": ["name", "email"]
+                                        "required": ["name", "email"],
                                     }
                                 }
-                            }
+                            },
                         },
                         "responses": {
                             "200": {
@@ -66,13 +66,13 @@ class TestParameterCollisions:
                                             "properties": {
                                                 "id": {"type": "integer"},
                                                 "name": {"type": "string"},
-                                                "email": {"type": "string"}
-                                            }
+                                                "email": {"type": "string"},
+                                            },
                                         }
                                     }
-                                }
+                                },
                             }
-                        }
+                        },
                     }
                 },
                 "/search": {
@@ -85,15 +85,15 @@ class TestParameterCollisions:
                                 "in": "query",
                                 "required": True,
                                 "schema": {"type": "string"},
-                                "description": "Search query parameter"
+                                "description": "Search query parameter",
                             },
                             {
                                 "name": "query",
                                 "in": "header",
                                 "required": False,
                                 "schema": {"type": "string"},
-                                "description": "Search query in header"
-                            }
+                                "description": "Search query in header",
+                            },
                         ],
                         "responses": {
                             "200": {
@@ -105,54 +105,52 @@ class TestParameterCollisions:
                                             "properties": {
                                                 "results": {
                                                     "type": "array",
-                                                    "items": {"type": "object"}
+                                                    "items": {"type": "object"},
                                                 }
-                                            }
+                                            },
                                         }
                                     }
-                                }
+                                },
                             }
-                        }
+                        },
                     }
-                }
-            }
+                },
+            },
         }
-    
+
     @pytest.mark.asyncio
     async def test_path_body_collision_handling(self, collision_spec):
         """Test that path and body parameters with same name are handled correctly."""
         async with httpx.AsyncClient(base_url="https://api.example.com") as client:
             server = FastMCPOpenAPI(
-                openapi_spec=collision_spec,
-                client=client,
-                name="Collision Test Server"
+                openapi_spec=collision_spec, client=client, name="Collision Test Server"
             )
-            
+
             async with Client(server) as mcp_client:
                 tools = await mcp_client.list_tools()
-                
+
                 # Find the update user tool
                 update_tool = next(tool for tool in tools if tool.name == "update_user")
                 assert update_tool is not None
-                
+
                 # Check that both path and body 'id' parameters are included
                 params = update_tool.inputSchema
                 properties = params["properties"]
-                
+
                 # Should have both path ID and body ID (with potential suffixing)
                 # The implementation should handle this collision by suffixing one of them
                 assert "id" in properties  # One version of id
-                
+
                 # Check for suffixed versions or verify both exist somehow
                 # The exact handling depends on implementation, but both should be accessible
                 param_names = list(properties.keys())
                 id_params = [name for name in param_names if "id" in name]
                 assert len(id_params) >= 1  # At least one id parameter
-                
+
                 # Should also have other body parameters
                 assert "name" in properties
                 assert "email" in properties
-                
+
                 # Required fields should include path parameter and required body fields
                 required = params.get("required", [])
                 assert "name" in required
@@ -160,58 +158,56 @@ class TestParameterCollisions:
                 # Path parameter should be required (may be suffixed)
                 id_required = any("id" in req for req in required)
                 assert id_required
-    
+
     @pytest.mark.asyncio
     async def test_query_header_collision_handling(self, collision_spec):
         """Test that query and header parameters with same name are handled correctly."""
         async with httpx.AsyncClient(base_url="https://api.example.com") as client:
             server = FastMCPOpenAPI(
-                openapi_spec=collision_spec,
-                client=client,
-                name="Collision Test Server"
+                openapi_spec=collision_spec, client=client, name="Collision Test Server"
             )
-            
+
             async with Client(server) as mcp_client:
                 tools = await mcp_client.list_tools()
-                
+
                 # Find the search tool
-                search_tool = next(tool for tool in tools if tool.name == "search_with_collision")
+                search_tool = next(
+                    tool for tool in tools if tool.name == "search_with_collision"
+                )
                 assert search_tool is not None
-                
+
                 # Check that both query and header 'query' parameters are handled
                 params = search_tool.inputSchema
                 properties = params["properties"]
-                
+
                 # Should handle the collision somehow (suffixing or other mechanism)
                 param_names = list(properties.keys())
                 query_params = [name for name in param_names if "query" in name]
                 assert len(query_params) >= 1  # At least one query parameter
-                
+
                 # Required should include the required query parameter
                 required = params.get("required", [])
                 query_required = any("query" in req for req in required)
                 assert query_required
-    
+
     @pytest.mark.asyncio
     async def test_collision_resolution_maintains_functionality(self, collision_spec):
         """Test that collision resolution doesn't break basic tool functionality."""
         async with httpx.AsyncClient(base_url="https://api.example.com") as client:
             server = FastMCPOpenAPI(
-                openapi_spec=collision_spec,
-                client=client,
-                name="Collision Test Server"
+                openapi_spec=collision_spec, client=client, name="Collision Test Server"
             )
-            
+
             async with Client(server) as mcp_client:
                 tools = await mcp_client.list_tools()
-                
+
                 # Should successfully create tools despite collisions
                 assert len(tools) == 2
-                
+
                 tool_names = {tool.name for tool in tools}
                 assert "update_user" in tool_names
                 assert "search_with_collision" in tool_names
-                
+
                 # Tools should have valid schemas
                 for tool in tools:
                     assert tool.inputSchema is not None

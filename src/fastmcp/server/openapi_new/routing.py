@@ -12,9 +12,6 @@ import fastmcp
 
 if TYPE_CHECKING:
     from .components import (
-        CallableResource,
-        CallableResourceTemplate,
-        CallableTool,
         OpenAPIResource,
         OpenAPIResourceTemplate,
         OpenAPITool,
@@ -31,7 +28,7 @@ RouteMapFn = Callable[[HTTPRoute, "MCPType"], "MCPType | None"]
 ComponentFn = Callable[
     [
         HTTPRoute,
-        "OpenAPITool | OpenAPIResource | OpenAPIResourceTemplate | CallableTool | CallableResource | CallableResourceTemplate",
+        "OpenAPITool | OpenAPIResource | OpenAPIResourceTemplate",
     ],
     None,
 ]

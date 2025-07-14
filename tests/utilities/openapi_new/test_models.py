@@ -378,6 +378,7 @@ class TestModelValidation:
 
         assert len(route.parameters) == 1
         assert route.parameters[0].name == "id"
+        assert route.request_body is not None
         assert route.request_body.required is True
 
 

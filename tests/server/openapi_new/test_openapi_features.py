@@ -9,7 +9,7 @@ from fastmcp.server.openapi_new import FastMCPOpenAPI
 
 class TestParameterHandling:
     """Test OpenAPI parameter handling features."""
-    
+
     @pytest.fixture
     def parameter_spec(self):
         """OpenAPI spec with various parameter types."""
@@ -28,31 +28,38 @@ class TestParameterHandling:
                                 "in": "query",
                                 "required": True,
                                 "schema": {"type": "string"},
-                                "description": "Search query"
+                                "description": "Search query",
                             },
                             {
                                 "name": "limit",
                                 "in": "query",
                                 "required": False,
-                                "schema": {"type": "integer", "minimum": 1, "maximum": 100},
-                                "description": "Maximum number of results"
+                                "schema": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 100,
+                                },
+                                "description": "Maximum number of results",
                             },
                             {
                                 "name": "tags",
                                 "in": "query",
                                 "required": False,
-                                "schema": {"type": "array", "items": {"type": "string"}},
+                                "schema": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
                                 "style": "form",
                                 "explode": True,
-                                "description": "Filter by tags"
+                                "description": "Filter by tags",
                             },
                             {
                                 "name": "X-API-Key",
                                 "in": "header",
                                 "required": True,
                                 "schema": {"type": "string"},
-                                "description": "API key for authentication"
-                            }
+                                "description": "API key for authentication",
+                            },
                         ],
                         "responses": {
                             "200": {
@@ -64,15 +71,15 @@ class TestParameterHandling:
                                             "properties": {
                                                 "items": {
                                                     "type": "array",
-                                                    "items": {"type": "object"}
+                                                    "items": {"type": "object"},
                                                 },
-                                                "total": {"type": "integer"}
-                                            }
+                                                "total": {"type": "integer"},
+                                            },
                                         }
                                     }
-                                }
+                                },
                             }
-                        }
+                        },
                     }
                 },
                 "/users/{id}/posts/{post_id}": {
@@ -85,15 +92,15 @@ class TestParameterHandling:
                                 "in": "path",
                                 "required": True,
                                 "schema": {"type": "integer"},
-                                "description": "User ID"
+                                "description": "User ID",
                             },
                             {
-                                "name": "post_id", 
+                                "name": "post_id",
                                 "in": "path",
                                 "required": True,
                                 "schema": {"type": "integer"},
-                                "description": "Post ID"
-                            }
+                                "description": "Post ID",
+                            },
                         ],
                         "responses": {
                             "200": {
@@ -105,78 +112,78 @@ class TestParameterHandling:
                                             "properties": {
                                                 "id": {"type": "integer"},
                                                 "title": {"type": "string"},
-                                                "content": {"type": "string"}
-                                            }
+                                                "content": {"type": "string"},
+                                            },
                                         }
                                     }
-                                }
+                                },
                             }
-                        }
+                        },
                     }
-                }
-            }
+                },
+            },
         }
-    
+
     @pytest.mark.asyncio
     async def test_query_parameters_in_tools(self, parameter_spec):
         """Test that query parameters are properly included in tool parameters."""
         async with httpx.AsyncClient(base_url="https://api.example.com") as client:
             server = FastMCPOpenAPI(
-                openapi_spec=parameter_spec,
-                client=client,
-                name="Parameter Test Server"
+                openapi_spec=parameter_spec, client=client, name="Parameter Test Server"
             )
-            
+
             async with Client(server) as mcp_client:
                 tools = await mcp_client.list_tools()
-                
+
                 # Find the search tool
-                search_tool = next(tool for tool in tools if tool.name == "search_items")
+                search_tool = next(
+                    tool for tool in tools if tool.name == "search_items"
+                )
                 assert search_tool is not None
-                
+
                 # Check that parameters are included in the tool's input schema
                 params = search_tool.inputSchema
                 assert params["type"] == "object"
-                
+
                 properties = params["properties"]
-                
+
                 # Check that key parameters are present
                 # (Schema details may vary based on implementation)
                 assert "query" in properties
                 assert "limit" in properties
                 assert "tags" in properties
                 assert "X-API-Key" in properties
-                
+
                 # Check that required parameters are marked as required
                 required = params.get("required", [])
                 assert "query" in required
                 assert "X-API-Key" in required
-    
+
     @pytest.mark.asyncio
     async def test_path_parameters_in_tools(self, parameter_spec):
         """Test that path parameters are properly included in tool parameters."""
         async with httpx.AsyncClient(base_url="https://api.example.com") as client:
             server = FastMCPOpenAPI(
-                openapi_spec=parameter_spec,
-                client=client,
-                name="Parameter Test Server"
+                openapi_spec=parameter_spec, client=client, name="Parameter Test Server"
             )
-            
+
             async with Client(server) as mcp_client:
                 tools = await mcp_client.list_tools()
-                
+
                 # Find the user post tool
-                user_post_tool = next(tool for tool in tools if tool.name == "get_user_post")
+                user_post_tool = next(
+                    tool for tool in tools if tool.name == "get_user_post"
+                )
                 assert user_post_tool is not None
-                
+
                 # Check that path parameters are included
                 params = user_post_tool.inputSchema
                 properties = params["properties"]
-                
+
                 # Check that path parameters are present
                 assert "id" in properties
                 assert "post_id" in properties
-                
+
                 # Path parameters should be required
                 required = params.get("required", [])
                 assert "id" in required
@@ -185,7 +192,7 @@ class TestParameterHandling:
 
 class TestRequestBodyHandling:
     """Test OpenAPI request body handling."""
-    
+
     @pytest.fixture
     def request_body_spec(self):
         """OpenAPI spec with request body."""
@@ -207,32 +214,34 @@ class TestRequestBodyHandling:
                                         "properties": {
                                             "name": {
                                                 "type": "string",
-                                                "description": "User's full name"
+                                                "description": "User's full name",
                                             },
                                             "email": {
                                                 "type": "string",
                                                 "format": "email",
-                                                "description": "User's email address"
+                                                "description": "User's email address",
                                             },
                                             "age": {
                                                 "type": "integer",
                                                 "minimum": 0,
                                                 "maximum": 150,
-                                                "description": "User's age"
+                                                "description": "User's age",
                                             },
                                             "preferences": {
                                                 "type": "object",
                                                 "properties": {
                                                     "theme": {"type": "string"},
-                                                    "notifications": {"type": "boolean"}
+                                                    "notifications": {
+                                                        "type": "boolean"
+                                                    },
                                                 },
-                                                "description": "User preferences"
-                                            }
+                                                "description": "User preferences",
+                                            },
                                         },
-                                        "required": ["name", "email"]
+                                        "required": ["name", "email"],
                                     }
                                 }
-                            }
+                            },
                         },
                         "responses": {
                             "201": {
@@ -244,18 +253,18 @@ class TestRequestBodyHandling:
                                             "properties": {
                                                 "id": {"type": "integer"},
                                                 "name": {"type": "string"},
-                                                "email": {"type": "string"}
-                                            }
+                                                "email": {"type": "string"},
+                                            },
                                         }
                                     }
-                                }
+                                },
                             }
-                        }
+                        },
                     }
                 }
-            }
+            },
         }
-    
+
     @pytest.mark.asyncio
     async def test_request_body_properties_in_tool(self, request_body_spec):
         """Test that request body properties are included in tool parameters."""
@@ -263,26 +272,26 @@ class TestRequestBodyHandling:
             server = FastMCPOpenAPI(
                 openapi_spec=request_body_spec,
                 client=client,
-                name="Request Body Test Server"
+                name="Request Body Test Server",
             )
-            
+
             async with Client(server) as mcp_client:
                 tools = await mcp_client.list_tools()
-                
+
                 # Find the create user tool
                 create_tool = next(tool for tool in tools if tool.name == "create_user")
                 assert create_tool is not None
-                
+
                 # Check that request body properties are included
                 params = create_tool.inputSchema
                 properties = params["properties"]
-                
+
                 # Check that request body properties are present
                 assert "name" in properties
-                assert "email" in properties  
+                assert "email" in properties
                 assert "age" in properties
                 assert "preferences" in properties
-                
+
                 # Check required fields from request body
                 required = params.get("required", [])
                 assert "name" in required
@@ -291,7 +300,7 @@ class TestRequestBodyHandling:
 
 class TestResponseSchemas:
     """Test OpenAPI response schema handling."""
-    
+
     @pytest.fixture
     def response_schema_spec(self):
         """OpenAPI spec with detailed response schemas."""
@@ -307,9 +316,9 @@ class TestResponseSchemas:
                         "parameters": [
                             {
                                 "name": "id",
-                                "in": "path", 
+                                "in": "path",
                                 "required": True,
-                                "schema": {"type": "integer"}
+                                "schema": {"type": "integer"},
                             }
                         ],
                         "responses": {
@@ -327,14 +336,16 @@ class TestResponseSchemas:
                                                     "type": "object",
                                                     "properties": {
                                                         "bio": {"type": "string"},
-                                                        "avatar_url": {"type": "string"}
-                                                    }
-                                                }
+                                                        "avatar_url": {
+                                                            "type": "string"
+                                                        },
+                                                    },
+                                                },
                                             },
-                                            "required": ["id", "name", "email"]
+                                            "required": ["id", "name", "email"],
                                         }
                                     }
-                                }
+                                },
                             },
                             "404": {
                                 "description": "User not found",
@@ -344,18 +355,18 @@ class TestResponseSchemas:
                                             "type": "object",
                                             "properties": {
                                                 "error": {"type": "string"},
-                                                "code": {"type": "integer"}
-                                            }
+                                                "code": {"type": "integer"},
+                                            },
                                         }
                                     }
-                                }
-                            }
-                        }
+                                },
+                            },
+                        },
                     }
                 }
-            }
+            },
         }
-    
+
     @pytest.mark.asyncio
     async def test_tool_has_output_schema(self, response_schema_spec):
         """Test that tools have output schemas from response definitions."""
@@ -363,17 +374,17 @@ class TestResponseSchemas:
             server = FastMCPOpenAPI(
                 openapi_spec=response_schema_spec,
                 client=client,
-                name="Response Schema Test Server"
+                name="Response Schema Test Server",
             )
-            
+
             async with Client(server) as mcp_client:
                 tools = await mcp_client.list_tools()
-                
+
                 # Find the get user tool
                 get_user_tool = next(tool for tool in tools if tool.name == "get_user")
                 assert get_user_tool is not None
-                
-                # Check that the tool has an output schema  
+
+                # Check that the tool has an output schema
                 # Note: output schema might be None if not extracted properly
                 # Let's just check the tool exists and has basic properties
                 assert get_user_tool.description is not None

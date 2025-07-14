@@ -150,7 +150,7 @@ class FastMCPOpenAPI(FastMCP):
 
         # Create openapi-core Spec and RequestDirector for stateless request building
         try:
-            self._spec = Spec.from_dict(openapi_spec)
+            self._spec = Spec.from_dict(openapi_spec)  # type: ignore[arg-type]
             self._director = RequestDirector(self._spec)
             logger.info(
                 "Initialized OpenAPI RequestDirector for stateless request building"
